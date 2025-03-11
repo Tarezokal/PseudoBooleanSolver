@@ -180,9 +180,7 @@ void PBSolver::processConstraint(const std::string& line, int constraint_index) 
 				std::cout << "Invalid variable: " << token << std::endl;
 				continue;
 			}
-
 			term_vars.push_back(var);
-
 			// Register this variable with the constraint
 			var_to_pb_constraints[var].push_back(constraint_index);
 			var_occurrence_count[var]++;
@@ -198,21 +196,16 @@ void PBSolver::processConstraint(const std::string& line, int constraint_index) 
 
 		// Handle the term based on number of variables
 		if (term_vars.size() == 1) {
-			// Linear term
 			c.insert_term(coef, term_vars[0]);
-
 			if (ValDecHeuristic == VAL_DEC_HEURISTIC::LITSCORE) {
 				bumpLitScore(v2l(term_vars[0]));
 			}
-			// Also update the decision heuristic if using MINISAT
 			if (VarDecHeuristic == VAR_DEC_HEURISTIC::MINISAT) {
 				bumpVarScore(term_vars[0]);
 			}
 		}
 		else if (term_vars.size() > 1) {
-			// For nonlinear terms, simplify by using only the first variable
 			c.insert_term(coef, term_vars[0]);
-			// Update the decision heuristic data structures
 			if (VarDecHeuristic == VAR_DEC_HEURISTIC::MINISAT) {
 				bumpVarScore(term_vars[0]);
 			}
@@ -220,34 +213,27 @@ void PBSolver::processConstraint(const std::string& line, int constraint_index) 
 		}
 	}
 
-	// Set the right-hand-side value
+	// Set the right-hand-side value and initialize LHS to 0
 	c.set_rhs(rhs);
-	c.set_lhs(0); // Initialize LHS to 0
-
+	c.set_lhs(0);
 	std::cout << "Constraint #" << constraint_index << " before normalization: ";
 	c.print_constraint();
 
-	// Normalize based on the constraint operator
-	if (constraint_op == ">=") {
-		normalizePBConstraint(c, true);
-	}
-	else if (constraint_op == "<=") {
-		normalizePBConstraint(c, false);
-	}
-
-	else if (constraint_op == "=") {
-		// For equality constraints, create two constraints:
-		// one for "≤" and one for "≥".
+	// Normalize and add the constraint based on the operator.
+	if (constraint_op == "=") {
+		// For "=" split into two constraints.
 		// Process the ≤ part:
 		Constraint c_leq = c;
 		normalizePBConstraint(c_leq, false); // normalize as ≤
 		if (c_leq.constraint_size() == 1) {
 			add_unary_constraint(c_leq);
+			S.nconstraints += 1;
 			std::cout << "After normalization (<=, unary): ";
 			c_leq.print_constraint();
 		}
 		else if (c_leq.constraint_size() > 1) {
 			add_constraint(c_leq, 0, 1);
+			S.nconstraints += 1;
 			std::cout << "After normalization (<=): ";
 			c_leq.print_constraint();
 		}
@@ -266,20 +252,29 @@ void PBSolver::processConstraint(const std::string& line, int constraint_index) 
 			c_geq.print_constraint();
 		}
 	}
-
-
-	// Add the constraint to the solver
-	if (c.constraint_size() > 0) {
-		add_constraint(c, 0, 1);
-		std::cout << "After normalization: ";
-		c.print_constraint();
-	}
 	else {
-		std::cout << "Skipping empty constraint" << std::endl;
+		// For ≥ or ≤, just normalize and add.
+		if (constraint_op == ">=") {
+			normalizePBConstraint(c, true);
+		}
+		else if (constraint_op == "<=") {
+			normalizePBConstraint(c, false);
+		}
+		if (c.constraint_size() == 1) {
+			add_unary_constraint(c);
+			std::cout << "After normalization (unary): ";
+			c.print_constraint();
+		}
+		else if (c.constraint_size() > 1) {
+			add_constraint(c, 0, 1);
+			std::cout << "After normalization: ";
+			c.print_constraint();
+		}
+		else {
+			std::cout << "Skipping empty constraint" << std::endl;
+		}
 	}
 }
-
-
 
 
 void PBSolver::add_constraint(Constraint& c, int l, int r) {
@@ -365,6 +360,9 @@ int getCoefficient(const std::vector<std::pair<int, int>>& constraint, int var) 
 
 
 inline void PBSolver::assert_lit(Lit l) {
+	if (l == 19) {
+		std::cout << "19 \n";
+	}
 	trail_pb.push_back(l);
 	int var = l2v(l);
 	if (Neg(l)) prev_state_pb[var] = state_pb[var] = VarState::V_FALSE; else prev_state_pb[var] = state_pb[var] = VarState::V_TRUE;
@@ -522,14 +520,15 @@ Apply_decision:
 
 	assert_lit(best_lit);
 	++num_decisions;
+	asserted_lit = ::negate(best_lit);
 	for (int constraint_idx : var_to_pb_constraints[l2v(best_lit)]) {
 		Constraint& pbc = pbConstraints[constraint_idx];
 		if (pbc.get_lhs() > pbc.get_rhs()) {
-			asserted_lit = ::negate(best_lit);
 			conflicting_constraint_idx = constraint_idx;
 			return SolverState::CONFLICT;
 		}
 	}
+
 	return SolverState::UNDEF;
 }
 
@@ -907,7 +906,7 @@ SolverState PBSolver::_solve() {
 	while (true) {
 		if (timeout > 0 && cpuTime() - begin_time > timeout) return SolverState::TIMEOUT;
 		while (true) {
-			res = BCP();
+			res = BCP(); 
 			if (res == SolverState::UNSAT) return res;
 			if (res == SolverState::CONFLICT)
 			{
@@ -927,7 +926,7 @@ void PBSolver::normalizePBConstraint(Constraint& pb_constraint, bool bigger) {
 	Constraint newConstraint;
 	std::vector<pair<int, int >> terms = pb_constraint.get_terms();
 	int rhs = pb_constraint.get_rhs();
-	// 🔹 Step 1: Flip inequality if RHS is negative
+	//Step 1: Flip inequality if RHS is negative
 	if (bigger) {
 		rhs *= -1;  // Convert RHS to positive
 		for (auto& term : terms) {
@@ -935,7 +934,7 @@ void PBSolver::normalizePBConstraint(Constraint& pb_constraint, bool bigger) {
 		}
 	}
 
-	// 🔹 Step 2: Convert each term correctly
+	//Step 2: Convert each term correctly
 	pb_constraint.reset_terms();
 	pb_constraint.reset_coefficients();
 	pb_constraint.reset_literals();
@@ -944,7 +943,7 @@ void PBSolver::normalizePBConstraint(Constraint& pb_constraint, bool bigger) {
 		int var = term.second;
 
 		if (coeff < 0) {
-			// 🔥 Apply transformation: x_i = 1 - x̅_i
+			//Apply transformation: x_i = 1 - x̅_i
 			coeff = -coeff;
 			rhs += coeff;  // Adjust RHS by subtracting the negated term
 			var = v2l(-var);
@@ -1025,7 +1024,7 @@ int main(int argc, char** argv) {
 	parse_options(argc, argv);
 
 	// Use wide strings for Windows API functions
-	std::wstring data_dir = L"C:\\Users\\Win10\\Downloads\\edusat\\edusat\\edusat\\data1.2";
+	std::wstring data_dir = L"C:\\Users\\Win10\\Downloads\\edusat\\edusat\\edusat\\data3";
 	std::wstring search_pattern = data_dir + L"\\*.opb";
 
 	WIN32_FIND_DATAW findFileData;
